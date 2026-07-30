@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish if version ahead of npm'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.releases_created == 'true') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Compute publish target
+        id: target
+        run: |
+          set -euo pipefail
+          name=$(jq -r .name package.json)
+          local_ver=$(jq -r .version package.json)
+          remote_ver=$(npm view "$name" version 2>/dev/null || echo "0.0.0")
+          if [ "$local_ver" != "$remote_ver" ]; then
+            echo "publish=true"  >> "$GITHUB_OUTPUT"
+            echo "::notice::Will publish $name@$local_ver (registry: $remote_ver)"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping $name@$local_ver (already on registry)"
+          fi
+
+      - name: Publish
+        if: ${{ steps.target.outputs.publish == 'true' }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

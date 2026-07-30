@@ -1,0 +1,45 @@
+{
+  "name": "ws-cli",
+  "version": "0.1.0",
+  "description": "TypeScript CLI wrapper for workspace-management — AI-friendly workspace orchestration",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "ws-cli": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "workspace",
+    "git-worktree",
+    "cli",
+    "devtools"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "citty": "^0.2.2"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "fallow": "^2.93.0",
+    "husky": "^9.1.7",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.57.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
