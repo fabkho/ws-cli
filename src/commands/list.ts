@@ -1,6 +1,8 @@
-// ws list — color-coded workspace list with column alignment
+// ws list — color-coded workspace table with fuzzy search
 
 import { defineCommand } from 'citty'
+import Table from 'cli-table3'
+import gradient from 'gradient-string'
 import { loadConfig } from '../config.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -11,8 +13,7 @@ import { execSync } from 'node:child_process'
 interface WorkspaceInfo {
   slug: string
   color: string
-  frontendExists: boolean
-  backendExists: boolean
+  served: boolean
   feBranch: string
   beBranch: string
   subdomain: string
@@ -61,8 +62,7 @@ function gather(): WorkspaceInfo[] {
       return {
         slug: e.name,
         color: workspaceColor(d, e.name),
-        frontendExists: feOk,
-        backendExists: beOk,
+        served: feOk && beOk,
         feBranch: feOk ? worktreeBranch(fe) : '—',
         beBranch: beOk ? worktreeBranch(be) : '—',
         subdomain: sub,
@@ -70,10 +70,7 @@ function gather(): WorkspaceInfo[] {
       }
     })
     .sort((a, b) => {
-      // Served first, then alphabetically
-      const aS = a.frontendExists && a.backendExists
-      const bS = b.frontendExists && b.backendExists
-      if (aS !== bS) return aS ? -1 : 1
+      if (a.served !== b.served) return a.served ? -1 : 1
       return a.slug.localeCompare(b.slug)
     })
 }
@@ -83,16 +80,11 @@ function gather(): WorkspaceInfo[] {
 const R = '\x1b[0m'
 const D = '\x1b[2m'
 const B = '\x1b[1m'
+
 function rgb(r: number, g: number, b: number) { return `\x1b[38;2;${r};${g};${b}m` }
 function hex(h: string): [number, number, number] {
   const s = h.replace('#', '')
   return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
-}
-
-function colorSlug(s: string, c: string): string {
-  if (!c) return s
-  const [r, g, b] = hex(c)
-  return `${B}${rgb(r, g, b)}${s}${R}`
 }
 
 function colorDot(c: string): string {
@@ -101,17 +93,15 @@ function colorDot(c: string): string {
   return `${rgb(r, g, b)}●${R}`
 }
 
-function link(url: string, label: string): string {
-  return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`
+function colorSlug(s: string, c: string, served: boolean): string {
+  if (!served) return `${D}${s}${R}`
+  if (!c) return s
+  const [r, g, b] = hex(c)
+  return `${B}${rgb(r, g, b)}${s}${R}`
 }
 
-/** Visible width of a string after stripping ANSI/OSC codes */
-function vw(s: string): number {
-  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\]8;.*?\x1b\\/g, '').length
-}
-
-function pad(s: string, w: number): string {
-  return s + ' '.repeat(Math.max(0, w - vw(s)))
+function link(url: string): string {
+  return url ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : '—'
 }
 
 // ---- command ----
@@ -121,22 +111,14 @@ export const listCommand = defineCommand({
   args: {
     json: { type: 'boolean', description: 'Output JSON' },
     all: { type: 'boolean', alias: 'a', description: 'Show git branches' },
-    filter: {
-      type: 'positional',
-      description: 'Fuzzy-filter workspaces by name',
-      required: false,
-    },
+    filter: { type: 'positional', description: 'Fuzzy-filter by name', required: false },
   },
   run: async ({ args }) => {
     let workspaces = gather()
 
-    // Fuzzy filter
     if (args.filter) {
       const { default: Fuse } = await import('fuse.js')
-      const fuse = new Fuse(workspaces, {
-        keys: ['slug', 'subdomain'],
-        threshold: 0.4,
-      })
+      const fuse = new Fuse(workspaces, { keys: ['slug', 'subdomain'], threshold: 0.4 })
       workspaces = fuse.search(args.filter as string).map(r => r.item)
     }
 
@@ -144,41 +126,59 @@ export const listCommand = defineCommand({
       console.log(JSON.stringify({ workspaces, count: workspaces.length }, null, 2))
       process.exit(0)
     }
-    if (workspaces.length === 0) { console.log('  No workspaces.\n'); process.exit(0) }
+    if (workspaces.length === 0) {
+      console.log(`\n  ${D}No workspaces found.${R}\n`)
+      process.exit(0)
+    }
 
     const showBranch = !!args.all
     const tty = process.stdout.isTTY
 
-    // Compute column widths
-    const slugPad = Math.max(...workspaces.map(w => vw(w.slug)), 8) + 2
-    const urlPad = Math.max(...workspaces.map(w => vw(w.adminUrl || w.subdomain || '—')), 8) + 2
+    // Build table
+    const head = showBranch
+      ? ['#', 'workspace', 'fe branch', 'be branch', 'url']
+      : ['#', 'workspace', 'url']
 
-    // Header
-    console.log('')
-    console.log(`  ${D}#   workspace${' '.repeat(slugPad - 11)}url${R}`)
-    console.log(`  ${D}${'─'.repeat(4 + slugPad + urlPad)}${R}`)
+    const table = new Table({
+      head: head.map(h => D + h + R),
+      chars: {
+        'top': '', 'top-mid': '', 'top-left': '', 'top-right': '',
+        'bottom': '', 'bottom-mid': '', 'bottom-left': '', 'bottom-right': '',
+        'left': '', 'left-mid': '', 'mid': '', 'mid-mid': '',
+        'right': '', 'right-mid': '', 'middle': '  ',
+      },
+      style: { 'padding-left': 0, 'padding-right': 0, head: [], border: [] },
+      colWidths: showBranch ? [3, null, 22, 22, null] : [3, null, null],
+      wordWrap: false,
+    })
 
     for (const [i, w] of workspaces.entries()) {
-      const num = String(i).padStart(2)
-      const dot = colorDot(w.color)
-      const name = w.frontendExists ? colorSlug(w.slug, w.color) : `${D}${w.slug}${R}`
+      const num = D + String(i).padStart(2) + R
+      const name = `${colorDot(w.color)}  ${colorSlug(w.slug, w.color, w.served)}`
       const url = w.adminUrl
-        ? tty ? link(w.adminUrl, w.adminUrl) : w.adminUrl
-        : '—'
+        ? tty ? link(w.adminUrl) : w.adminUrl
+        : `${D}—${R}`
 
-      let line = ` ${num} ${dot}  ${pad(name, slugPad)}`
       if (showBranch) {
-        line += ` ${D}fe:${R}${pad(w.feBranch, 14)} ${D}be:${R}${w.beBranch}`
+        const trunc = (s: string) => s.length > 20 ? s.slice(0, 19) + '…' : s
+        table.push([num, name, trunc(w.feBranch), trunc(w.beBranch), url])
       } else {
-        line += `${D}${url}${R}`
+        table.push([num, name, url])
       }
-      console.log(line)
     }
 
+    // Banner
+    const grad = gradient(['#FF71CE', '#01CDFE'])
+    console.log(`\n  ${grad('WORKSPACES')}`)
+
+    // Table
+    const lines = table.toString().split('\n')
+    for (const line of lines) console.log(`  ${line}`)
+
+    // Footer
     if (tty) process.stdout.write('\x1b]8;;\x1b\\')
-    const served = workspaces.filter(w => w.frontendExists && w.backendExists).length
-    console.log('')
-    console.log(`  ${D}${workspaces.length} workspace(s) — ${served} served${R}`)
-    console.log('')
+    const served = workspaces.filter(w => w.served).length
+    const filtered = args.filter ? ` (filtered from ${gather().length})` : ''
+    console.log(`\n  ${D}${workspaces.length} workspace(s) — ${served} served${filtered}${R}\n`)
   },
 })
