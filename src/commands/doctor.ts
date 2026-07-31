@@ -59,6 +59,7 @@ export const doctorCommand = defineCommand({
     slug: {
       type: 'positional',
       description: 'Workspace slug (auto-detected from CWD if omitted)',
+      required: false,
     },
     fix: {
       type: 'boolean',
