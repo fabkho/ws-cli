@@ -1,7 +1,6 @@
-// ws list — color-coded workspace table with fuzzy search
+// ws list — compact card-style workspace list
 
 import { defineCommand } from 'citty'
-import Table from 'cli-table3'
 import gradient from 'gradient-string'
 import { loadConfig } from '../config.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -87,13 +86,13 @@ function hex(h: string): [number, number, number] {
   return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
 }
 
-function colorDot(c: string): string {
+function dot(c: string): string {
   if (!c) return `${D}●${R}`
   const [r, g, b] = hex(c)
   return `${rgb(r, g, b)}●${R}`
 }
 
-function colorSlug(s: string, c: string, served: boolean): string {
+function slug(s: string, c: string, served: boolean): string {
   if (!served) return `${D}${s}${R}`
   if (!c) return s
   const [r, g, b] = hex(c)
@@ -101,7 +100,7 @@ function colorSlug(s: string, c: string, served: boolean): string {
 }
 
 function link(url: string): string {
-  return url ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : '—'
+  return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
 }
 
 // ---- command ----
@@ -133,52 +132,30 @@ export const listCommand = defineCommand({
 
     const showBranch = !!args.all
     const tty = process.stdout.isTTY
+    const grad = gradient(['#FF71CE', '#01CDFE'])
 
-    // Build table
-    const head = showBranch
-      ? ['#', 'workspace', 'fe branch', 'be branch', 'url']
-      : ['#', 'workspace', 'url']
-
-    const table = new Table({
-      head: head.map(h => D + h + R),
-      chars: {
-        'top': '', 'top-mid': '', 'top-left': '', 'top-right': '',
-        'bottom': '', 'bottom-mid': '', 'bottom-left': '', 'bottom-right': '',
-        'left': '', 'left-mid': '', 'mid': '', 'mid-mid': '',
-        'right': '', 'right-mid': '', 'middle': '  ',
-      },
-      style: { 'padding-left': 0, 'padding-right': 0, head: [], border: [] },
-      colWidths: showBranch ? [3, null, 22, 22, null] : [3, null, null],
-      wordWrap: false,
-    })
+    console.log(`\n  ${grad('workspaces')}`)
+    console.log(`  ${D}${'─'.repeat(60)}${R}`)
 
     for (const [i, w] of workspaces.entries()) {
       const num = D + String(i).padStart(2) + R
-      const name = `${colorDot(w.color)}  ${colorSlug(w.slug, w.color, w.served)}`
+      const name = slug(w.slug, w.color, w.served)
       const url = w.adminUrl
-        ? tty ? link(w.adminUrl) : w.adminUrl
-        : `${D}—${R}`
+        ? tty ? link(w.adminUrl) : D + w.adminUrl + R
+        : `${D}(not served)${R}`
 
+      console.log(` ${num}  ${dot(w.color)}  ${name}`)
       if (showBranch) {
-        const trunc = (s: string) => s.length > 20 ? s.slice(0, 19) + '…' : s
-        table.push([num, name, trunc(w.feBranch), trunc(w.beBranch), url])
-      } else {
-        table.push([num, name, url])
+        const trunc = (s: string) => s.length > 25 ? s.slice(0, 24) + '…' : s
+        console.log(`      ${D}fe${R} ${trunc(w.feBranch)}  ${D}be${R} ${trunc(w.beBranch)}`)
       }
+      console.log(`      ${url}`)
     }
 
-    // Banner
-    const grad = gradient(['#FF71CE', '#01CDFE'])
-    console.log(`\n  ${grad('WORKSPACES')}`)
-
-    // Table
-    const lines = table.toString().split('\n')
-    for (const line of lines) console.log(`  ${line}`)
-
-    // Footer
     if (tty) process.stdout.write('\x1b]8;;\x1b\\')
     const served = workspaces.filter(w => w.served).length
     const filtered = args.filter ? ` (filtered from ${gather().length})` : ''
-    console.log(`\n  ${D}${workspaces.length} workspace(s) — ${served} served${filtered}${R}\n`)
+    console.log(`  ${D}${'─'.repeat(60)}${R}`)
+    console.log(`  ${D}${workspaces.length} workspace(s) — ${served} served${filtered}${R}\n`)
   },
 })
