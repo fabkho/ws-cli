@@ -189,7 +189,7 @@ export const doctorCommand = defineCommand({
     // Fix: re-serve
     const { spawnSync } = await import('node:child_process')
     log.info('Running ws serve --force…')
-    const result = spawnSync('ws', ['serve', slug, '--force'], {
+    const result = spawnSync('workspaces', ['serve', slug, '--force'], {
       stdio: 'inherit',
       env: { ...process.env },
     })

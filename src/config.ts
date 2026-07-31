@@ -12,8 +12,9 @@ import { defaultConfig } from './types.js'
 
 function resolveBashHome(): string {
   try {
-    // The bash `ws` dispatcher must be on PATH (installed via install.sh).
-    const wsPath = execSync('which ws', { encoding: 'utf-8' }).trim()
+    // Use `workspaces` (not `ws`) so this works even when the TS CLI
+    // replaces `ws` on PATH. The bash install.sh creates both symlinks.
+    const wsPath = execSync('which workspaces', { encoding: 'utf-8' }).trim()
     // Follow symlinks to the real dispatcher, then go up to its dir.
     const realPath = execSync(`readlink -f "${wsPath}" 2>/dev/null || realpath "${wsPath}" 2>/dev/null || echo "${wsPath}"`, { encoding: 'utf-8' }).trim()
     return dirname(realPath)

@@ -17,9 +17,9 @@ export interface BashOpts {
 }
 
 /**
- * Run a bash workspace-management subcommand via the `ws` dispatcher.
- * Requires the bash tool to be installed on PATH (run install.sh from
- * the workspace-management repo).
+ * Run a bash workspace-management subcommand via the `workspaces` dispatcher.
+ * We call `workspaces` (not `ws`) so the TS CLI can replace `ws` on PATH
+ * without recursing into itself. The bash install.sh creates both symlinks.
  */
 export function ws(subcommand: string, args: string[] = [], opts: BashOpts = {}): BashResult {
   const spawnOpts: SpawnSyncOptions = {
@@ -30,7 +30,7 @@ export function ws(subcommand: string, args: string[] = [], opts: BashOpts = {})
     },
   }
 
-  const result = spawnSync('ws', [subcommand, ...args], spawnOpts)
+  const result = spawnSync('workspaces', [subcommand, ...args], spawnOpts)
 
   return {
     success: result.status === 0,
