@@ -1,17 +1,15 @@
-// ws list — interactive workspace browser with type-ahead search
+// ws list — color-coded workspace list with activity info
 
 import { defineCommand } from 'citty'
-import search, { Separator } from '@inquirer/search'
-import { select, outro, isCancel, note, log, spinner } from '@clack/prompts'
 import gradient from 'gradient-string'
 import { loadConfig } from '../config.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { execSync, spawn } from 'node:child_process'
+import { execSync } from 'node:child_process'
 
-// ---- data ----
+// ---- types ----
 
-interface W {
+interface WorkspaceInfo {
   slug: string
   color: string
   served: boolean
@@ -23,6 +21,8 @@ interface W {
   adminUrl: string
   lastCommit: Date | null
 }
+
+// ---- data ----
 
 function workspaceColor(dir: string, slug: string): string {
   const ws = join(dir, `${slug}.code-workspace`)
@@ -74,7 +74,7 @@ function relativeTime(d: Date | null): string {
   return `${Math.floor(days / 7)}w ago`
 }
 
-function gather(): W[] {
+function gather(): WorkspaceInfo[] {
   const config = loadConfig()
   const root = config.workspacesRoot
   if (!existsSync(root)) return []
@@ -111,176 +111,98 @@ function gather(): W[] {
     })
 }
 
-// ---- helpers ----
+// ---- rendering ----
 
-function fuzzyFilter(term: string, items: W[]): W[] {
-  const t = term.toLowerCase()
-  return items.filter(w => {
-    if (w.slug.toLowerCase().includes(t)) return true
-    if (w.subdomain.toLowerCase().includes(t)) return true
-    if (w.feBranch.toLowerCase().includes(t)) return true
-    if (w.beBranch.toLowerCase().includes(t)) return true
-    return false
-  })
+const R = '\x1b[0m'
+const D = '\x1b[2m'
+const B = '\x1b[1m'
+const G = '\x1b[32m'
+
+function rgb(r: number, g: number, b: number) { return `\x1b[38;2;${r};${g};${b}m` }
+function hex(h: string): [number, number, number] {
+  const s = h.replace('#', '')
+  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
+}
+
+function dot(c: string): string {
+  if (!c) return `${D}●${R}`
+  const [r, g, b] = hex(c)
+  return `${rgb(r, g, b)}●${R}`
+}
+
+function colorSlug(s: string, c: string, served: boolean): string {
+  if (!served) return `${D}${s}${R}`
+  if (!c) return s
+  const [r, g, b] = hex(c)
+  return `${B}${rgb(r, g, b)}${s}${R}`
+}
+
+function link(url: string): string {
+  return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
+}
+
+function aheadLabel(fe: number, be: number): string {
+  if (fe === 0 && be === 0) return ''
+  return `  ${G}+${fe}${R}/${G}+${be}${R}`
 }
 
 // ---- command ----
 
 export const listCommand = defineCommand({
-  meta: { name: 'list', description: 'Browse workspaces interactively with type-ahead search' },
+  meta: { name: 'list', description: 'List all workspaces' },
   args: {
-    json: { type: 'boolean', description: 'Output JSON (non-interactive)' },
+    json: { type: 'boolean', description: 'Output JSON' },
+    all: { type: 'boolean', alias: 'a', description: 'Show git branches and ahead/behind' },
+    filter: { type: 'positional', description: 'Fuzzy-filter by name', required: false },
   },
   run: async ({ args }) => {
-    const workspaces = gather()
-    const config = loadConfig()
+    let workspaces = gather()
+
+    if (args.filter) {
+      const { default: Fuse } = await import('fuse.js')
+      const fuse = new Fuse(workspaces, { keys: ['slug', 'subdomain'], threshold: 0.4 })
+      workspaces = fuse.search(args.filter as string).map(r => r.item)
+    }
 
     if (args.json) {
       console.log(JSON.stringify({ workspaces, count: workspaces.length }, null, 2))
       process.exit(0)
     }
     if (workspaces.length === 0) {
-      console.log(`\n  No workspaces found.\n`)
+      console.log(`\n  ${D}No workspaces found.${R}\n`)
       process.exit(0)
     }
 
-    while (true) {
-      const grad = gradient(['#FF71CE', '#01CDFE'])
-      console.log(`\n  ${grad('workspaces')}  ${workspaces.length} total\n`)
+    const showDetail = !!args.all
+    const tty = process.stdout.isTTY
+    const grad = gradient(['#FF71CE', '#01CDFE'])
 
-      // Type-ahead search: typing filters the list in real-time
-      const selected = await search({
-        message: 'Type to search, ↑↓ to move, enter to inspect:',
-        source: async (term, { signal: _signal }) => {
-          const items = term ? fuzzyFilter(term, workspaces) : workspaces
-          if (items.length === 0) return []
+    // Stats bar
+    const served = workspaces.filter(w => w.served).length
+    const dirty = workspaces.filter(w => w.feAhead > 0 || w.beAhead > 0).length
+    const recent = workspaces.filter(w => w.lastCommit && (Date.now() - w.lastCommit.getTime()) < 86400000).length
 
-          // Build rich options with descriptions
-          const options: Array<{ value: string; name: string; description: string } | Separator> = []
+    console.log(`\n  ${grad('workspaces')}`)
+    console.log(`  ${D}${workspaces.length} total  ·  ${served} served  ·  ${dirty} with changes  ·  ${recent} active today${R}\n`)
 
-          // Served section
-          const served = items.filter(w => w.served)
-          if (served.length > 0) {
-            options.push(new Separator(`─── Served (${served.length}) ───`))
-            for (const w of served) {
-              const ahead = w.feAhead > 0 || w.beAhead > 0
-                ? `+${w.feAhead}/+${w.beAhead}  `
-                : ''
-              options.push({
-                value: w.slug,
-                name: w.slug,
-                description: `${ahead}${relativeTime(w.lastCommit)}  ·  ${w.subdomain}`,
-              })
-            }
-          }
+    for (const w of workspaces) {
+      const time = `${D}${relativeTime(w.lastCommit)}${R}`
+      const name = colorSlug(w.slug, w.color, w.served)
+      const ahead = showDetail ? aheadLabel(w.feAhead, w.beAhead) : ''
+      const url = w.served
+        ? tty ? link(w.adminUrl) : w.adminUrl
+        : '(not served)'
 
-          // Not served section
-          const unserved = items.filter(w => !w.served)
-          if (unserved.length > 0) {
-            options.push(new Separator(`─── Not served (${unserved.length}) ───`))
-            for (const w of unserved) {
-              options.push({
-                value: w.slug,
-                name: w.slug,
-                description: 'not served',
-              })
-            }
-          }
-
-          return options
-        },
-        pageSize: 15,
-      })
-
-      if (selected === undefined || (selected as string) === '') {
-        console.log('')
-        process.exit(0)
+      console.log(`  ${dot(w.color)} ${name}`)
+      if (showDetail) {
+        console.log(`  ${D}fe${R} ${w.feBranch}${ahead}  ${D}be${R} ${w.beBranch}`)
       }
-
-      const w = workspaces.find(x => x.slug === selected)
-      if (!w) continue
-
-      // Detail panel
-      const ahead = w.feAhead > 0 || w.beAhead > 0
-        ? `fe +${w.feAhead}  be +${w.beAhead}`
-        : 'no unmerged commits'
-
-      note(
-        `status:    ${w.served ? 'served' : 'not served'}\n` +
-        `fe branch: ${w.feBranch}\n` +
-        `be branch: ${w.beBranch}\n` +
-        `ahead:     ${ahead}\n` +
-        `activity:  ${relativeTime(w.lastCommit)}\n` +
-        `url:       ${w.adminUrl}`,
-        w.slug,
-      )
-
-      // Action menu
-      const action = await select({
-        message: 'What would you like to do?',
-        options: [
-          { value: 'open', label: 'Open in IDE', hint: `${config.frontendIde} + ${config.backendIde}` },
-          { value: 'serve', label: 'Serve / re-serve', hint: 'ws serve --force' },
-          { value: 'doctor', label: 'Run doctor', hint: 'diagnose issues' },
-          { value: 'back', label: 'Back to list' },
-          { value: 'quit', label: 'Quit' },
-        ],
-      })
-
-      if (isCancel(action) || action === 'quit') {
-        outro('Done.')
-        process.exit(0)
-      }
-
-      if (action === 'back') continue
-
-      if (action === 'open') {
-        const fePath = join(config.workspacesRoot, w.slug, config.frontendDirName)
-        const bePath = join(config.workspacesRoot, w.slug, config.backendDirName)
-        const side = await select({
-          message: 'Which side?',
-          options: [
-            { value: 'both', label: `Both (${config.frontendIde} + ${config.backendIde})` },
-            { value: 'frontend', label: `Frontend only (${config.frontendIde})` },
-            { value: 'backend', label: `Backend only (${config.backendIde})` },
-          ],
-        })
-        if (isCancel(side)) continue
-        if (side === 'both' || side === 'frontend') {
-          spawn(config.frontendIde, config.frontendIde === 'zed' ? ['-n', fePath] : [fePath], { stdio: 'ignore', detached: true }).unref()
-        }
-        if (side === 'both' || side === 'backend') {
-          spawn(config.backendIde, config.backendIde === 'zed' ? ['-n', bePath] : [bePath], { stdio: 'ignore', detached: true }).unref()
-        }
-        log.success(`Opened ${w.slug}`)
-        outro('Done.')
-        process.exit(0)
-      }
-
-      if (action === 'serve') {
-        const spin = spinner()
-        spin.start('Running ws serve --force…')
-        execSync(`workspaces serve '${w.slug}' --force`, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env },
-        })
-        spin.stop('Done')
-        log.success(`Served: ${w.adminUrl}`)
-        outro('Done.')
-        process.exit(0)
-      }
-
-      if (action === 'doctor') {
-        const spin = spinner()
-        spin.start('Running doctor…')
-        try {
-          execSync(`node ${process.argv[1]} doctor '${w.slug}' --fix`, {
-            stdio: 'inherit',
-            env: { ...process.env },
-          })
-        } catch { /* doctor exits non-zero on issues */ }
-        process.exit(0)
-      }
+      console.log(`  ${time}  ·  ${D}${url}${R}`)
     }
+
+    if (tty) process.stdout.write('\x1b]8;;\x1b\\')
+    const filtered = args.filter ? ` (filtered from ${gather().length})` : ''
+    console.log(`\n  ${D}${workspaces.length} workspace(s) — ${served} served${filtered}${R}\n`)
+    process.exit(0)
   },
 })
