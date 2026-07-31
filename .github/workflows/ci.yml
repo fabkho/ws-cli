@@ -20,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -34,4 +36,4 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npx fallow audit
+      - run: npx fallow audit --base main
