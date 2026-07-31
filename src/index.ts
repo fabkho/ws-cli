@@ -8,6 +8,7 @@ import { createCommand } from './commands/create.js'
 import { openCommand, serveCommand, statusCommand, mrCommand } from './commands/interactive.js'
 import { testCommand } from './commands/test.js'
 import { listCommand } from './commands/list.js'
+import { list1, list2, list3, list4, list5 } from './commands/list-prototypes.js'
 import { removeCommand } from './commands/remove.js'
 import { doctorCommand } from './commands/doctor.js'
 import { syncCommand, trustCommand } from './commands/misc.js'
@@ -24,6 +25,11 @@ const main = defineCommand({
     test: testCommand,
     mr: mrCommand,
     list: listCommand,
+    'list-1': list1,
+    'list-2': list2,
+    'list-3': list3,
+    'list-4': list4,
+    'list-5': list5,
     status: statusCommand,
     remove: removeCommand,
     open: openCommand,
