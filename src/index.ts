@@ -5,13 +5,10 @@
 
 import { defineCommand, runMain } from 'citty'
 import { createCommand } from './commands/create.js'
-import { serveCommand } from './commands/serve.js'
+import { openCommand, serveCommand, statusCommand, mrCommand } from './commands/interactive.js'
 import { testCommand } from './commands/test.js'
-import { mrCommand } from './commands/mr.js'
 import { listCommand } from './commands/list.js'
-import { statusCommand } from './commands/status.js'
 import { removeCommand } from './commands/remove.js'
-import { openCommand } from './commands/open.js'
 import { doctorCommand } from './commands/doctor.js'
 import { syncCommand, trustCommand } from './commands/misc.js'
 
