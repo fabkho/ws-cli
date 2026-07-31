@@ -1,7 +1,6 @@
 // Shared helpers for interactive commands
 
-import { outro, log } from '@clack/prompts'
-import search, { Separator } from '@inquirer/search'
+import { select, outro, log } from '@clack/prompts'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync } from 'node:child_process'
@@ -62,13 +61,51 @@ function gatherWorkspaces(): W[] {
     })
 }
 
+function fuzzyFilter(query: string, items: W[]): W[] {
+  const q = query.toLowerCase()
+  return items.filter(w => w.slug.toLowerCase().includes(q))
+}
+
 /**
- * Auto-detect workspace slug from CWD, or use type-ahead search to pick one.
- * Numbers and existing slugs pass through — bash handles index lookup.
+ * Resolve a workspace slug:
+ * - Explicit slug → pass through (bash handles index numbers too)
+ * - CWD inside a workspace → auto-detect
+ * - Search query → fuzzy filter, then:
+ *   0 matches → error
+ *   1 match  → return it directly
+ *   2+ matches → clack select() to pick
+ * - No arg at all → clack select() with all workspaces
  */
 export async function resolveSlug(argSlug: string | undefined): Promise<string | null> {
-  if (argSlug !== undefined) return argSlug
+  // Explicit slug — pass through (bash handles numbers, exact slugs)
+  if (argSlug !== undefined) {
+    // Check if it's a direct match (exact slug or index number)
+    const config = loadConfig()
+    if (/^\d+$/.test(argSlug) || existsSync(join(config.workspacesRoot, argSlug))) {
+      return argSlug
+    }
+    // Fuzzy search — treat as query
+    const matches = fuzzyFilter(argSlug, gatherWorkspaces())
+    if (matches.length === 0) {
+      log.error(`No workspace matches "${argSlug}"`)
+      return null
+    }
+    if (matches.length === 1) return matches[0].slug
 
+    // Multiple matches — let user pick
+    const chosen = await select({
+      message: `${matches.length} workspaces match "${argSlug}":`,
+      options: matches.map(w => ({
+        value: w.slug,
+        label: w.served ? w.slug : `${w.slug} (not served)`,
+        hint: relativeTime(w.lastCommit),
+      })),
+    })
+    if (!chosen) { outro('Cancelled.'); return null }
+    return chosen as string
+  }
+
+  // No arg — auto-detect from CWD or show full picker
   const config = loadConfig()
   const cwd = process.cwd()
 
@@ -77,58 +114,18 @@ export async function resolveSlug(argSlug: string | undefined): Promise<string |
     if (slug) return slug
   }
 
-  if (!existsSync(config.workspacesRoot)) {
-    log.error('No workspaces found and not inside one.')
-    return null
-  }
-
   const all = gatherWorkspaces()
   if (all.length === 0) { log.error('No workspaces found.'); return null }
 
-  // Type-ahead search: type to fuzzy-filter, arrow keys to select
-  const selected = await search<string>({
-    message: 'Type to search, ↑↓ to pick, enter to open:',
-    source: (term) => {
-      const items = term
-        ? all.filter(w => w.slug.toLowerCase().includes(term.toLowerCase()))
-        : all
-      if (items.length === 0) return []
-
-      const options: Array<{ value: string; name: string; description: string } | Separator> = []
-
-      const served = items.filter(w => w.served)
-      if (served.length > 0) {
-        options.push(new Separator(`─── Served (${served.length}) ───`))
-        for (const w of served) {
-          options.push({
-            value: w.slug,
-            name: w.slug,
-            description: `${relativeTime(w.lastCommit)}`,
-          })
-        }
-      }
-
-      const unserved = items.filter(w => !w.served)
-      if (unserved.length > 0) {
-        options.push(new Separator(`─── Not served (${unserved.length}) ───`))
-        for (const w of unserved) {
-          options.push({
-            value: w.slug,
-            name: w.slug,
-            description: 'not served',
-          })
-        }
-      }
-
-      return options
-    },
-    pageSize: 12,
+  const chosen = await select({
+    message: 'Pick a workspace:',
+    options: all.map(w => ({
+      value: w.slug,
+      label: w.served ? w.slug : `${w.slug} (not served)`,
+      hint: relativeTime(w.lastCommit),
+    })),
   })
 
-  console.log('') // blank line after search prompt
-  if (selected === undefined) {
-    outro('Cancelled.')
-    return null
-  }
-  return selected
+  if (!chosen) { outro('Cancelled.'); return null }
+  return chosen as string
 }
