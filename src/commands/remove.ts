@@ -3,6 +3,7 @@
 import { defineCommand } from 'citty'
 import { confirm, intro, outro, isCancel } from '@clack/prompts'
 import { ws } from '../bash.js'
+import { resolveSlug } from './helpers.js'
 
 export const removeCommand = defineCommand({
   meta: {
@@ -13,6 +14,7 @@ export const removeCommand = defineCommand({
     slug: {
       type: 'positional',
       description: 'Workspace slug (auto-detected from CWD if omitted)',
+      required: false,
     },
     force: {
       type: 'boolean',
@@ -25,7 +27,8 @@ export const removeCommand = defineCommand({
     },
   },
   run: async ({ args, rawArgs }) => {
-    const slug = (args.slug as string) || 'this workspace'
+    const slug = await resolveSlug(args.slug as string | undefined)
+    if (!slug) process.exit(1)
 
     if (!args.force) {
       intro(`Tear down ${slug}`)
@@ -41,6 +44,7 @@ export const removeCommand = defineCommand({
     }
 
     const forwardedArgs = rawArgs.filter(a => a !== '--json')
+    if (!forwardedArgs.includes(slug)) forwardedArgs.push(slug)
     const result = ws('remove', forwardedArgs)
     process.exit(result.status ?? 1)
   },
