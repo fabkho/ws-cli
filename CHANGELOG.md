@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.2](https://github.com/fabkho/ws-cli/compare/ws-cli-0.1.1...ws-cli-0.1.2) (2026-07-31)
+
+
+### Features
+
+* type-ahead search in ws open (and all slug pickers) ([3ac5a37](https://github.com/fabkho/ws-cli/commit/3ac5a376c63098116ee69dc57ff731c357c6e93f))
+
+
+### Bug Fixes
+
+* **ci:** pass NODE_AUTH_TOKEN to setup-node for .npmrc ([ac81f66](https://github.com/fabkho/ws-cli/commit/ac81f664c6157fd4d85ca67d0e9ae8848a6f985b))
+* **ci:** write .npmrc explicitly before publish ([4741ad7](https://github.com/fabkho/ws-cli/commit/4741ad79ae3c5c73c151f471dcc5ce06446c093f))
+* rename to @fabkho/ws-cli (ws-cli taken on npm) ([3daa9a9](https://github.com/fabkho/ws-cli/commit/3daa9a9c1cb716858c9b1fb1050d3456b8b63bc2))
+* ws open uses clack select + argument-based fuzzy search ([2565ae0](https://github.com/fabkho/ws-cli/commit/2565ae06abce39cd52e6787fc55ac711afae9dc1))
+
 ## [0.1.1](https://github.com/fabkho/ws-cli/compare/ws-cli-0.1.0...ws-cli-0.1.1) (2026-07-31)
 
 
