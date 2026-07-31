@@ -1,25 +1,27 @@
-// ws list — compact card-style workspace list
+// ws list — interactive workspace browser
 
 import { defineCommand } from 'citty'
+import { select, intro, outro, isCancel, note, log } from '@clack/prompts'
 import gradient from 'gradient-string'
 import { loadConfig } from '../config.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 
-// ---- types ----
+// ---- data ----
 
-interface WorkspaceInfo {
+interface W {
   slug: string
   color: string
   served: boolean
   feBranch: string
   beBranch: string
+  feAhead: number
+  beAhead: number
   subdomain: string
   adminUrl: string
+  lastCommit: Date | null
 }
-
-// ---- data ----
 
 function workspaceColor(dir: string, slug: string): string {
   const ws = join(dir, `${slug}.code-workspace`)
@@ -30,13 +32,27 @@ function workspaceColor(dir: string, slug: string): string {
   } catch { return '' }
 }
 
+function git(cwd: string, cmd: string): string {
+  try { return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim() }
+  catch { return '' }
+}
+
 function worktreeBranch(wt: string): string {
   if (!existsSync(join(wt, '.git'))) return '—'
-  try {
-    return execSync('git symbolic-ref --quiet --short HEAD', {
-      cwd: wt, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim() || 'detached'
-  } catch { return '—' }
+  return git(wt, 'symbolic-ref --quiet --short HEAD') || 'detached'
+}
+
+function commitsAhead(wt: string, base = 'main'): number {
+  if (!existsSync(join(wt, '.git'))) return 0
+  const ref = git(wt, `rev-parse --verify --quiet "refs/remotes/origin/${base}"`)
+  const baseRef = ref ? `origin/${base}` : base
+  return parseInt(git(wt, `rev-list --count "${baseRef}..HEAD"`), 10) || 0
+}
+
+function lastCommitDate(wt: string): Date | null {
+  if (!existsSync(join(wt, '.git'))) return null
+  const ts = git(wt, 'log -1 --format=%ct')
+  return ts ? new Date(parseInt(ts, 10) * 1000) : null
 }
 
 function subdomain(slug: string): string {
@@ -44,7 +60,20 @@ function subdomain(slug: string): string {
   return p.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')
 }
 
-function gather(): WorkspaceInfo[] {
+function relativeTime(d: Date | null): string {
+  if (!d) return '—'
+  const diff = Date.now() - d.getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 7) return `${days}d ago`
+  return `${Math.floor(days / 7)}w ago`
+}
+
+function gather(): W[] {
   const config = loadConfig()
   const root = config.workspacesRoot
   if (!existsSync(root)) return []
@@ -58,58 +87,35 @@ function gather(): WorkspaceInfo[] {
       const feOk = existsSync(fe)
       const beOk = existsSync(be)
       const sub = subdomain(e.name)
+      const lc = lastCommitDate(feOk ? fe : beOk ? be : '')
       return {
         slug: e.name,
         color: workspaceColor(d, e.name),
         served: feOk && beOk,
         feBranch: feOk ? worktreeBranch(fe) : '—',
         beBranch: beOk ? worktreeBranch(be) : '—',
+        feAhead: feOk ? commitsAhead(fe, config.frontendBaseBranch) : 0,
+        beAhead: beOk ? commitsAhead(be, config.backendBaseBranch) : 0,
         subdomain: sub,
-        adminUrl: feOk ? `https://${sub}.${config.baseDomain}${config.adminPath}` : '',
+        adminUrl: `https://${sub}.${config.baseDomain}${config.adminPath}`,
+        lastCommit: lc,
       }
     })
     .sort((a, b) => {
       if (a.served !== b.served) return a.served ? -1 : 1
-      return a.slug.localeCompare(b.slug)
+      if (!a.lastCommit && !b.lastCommit) return 0
+      if (!a.lastCommit) return 1
+      if (!b.lastCommit) return -1
+      return b.lastCommit.getTime() - a.lastCommit.getTime()
     })
-}
-
-// ---- rendering ----
-
-const R = '\x1b[0m'
-const D = '\x1b[2m'
-const B = '\x1b[1m'
-
-function rgb(r: number, g: number, b: number) { return `\x1b[38;2;${r};${g};${b}m` }
-function hex(h: string): [number, number, number] {
-  const s = h.replace('#', '')
-  return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)]
-}
-
-function dot(c: string): string {
-  if (!c) return `${D}●${R}`
-  const [r, g, b] = hex(c)
-  return `${rgb(r, g, b)}●${R}`
-}
-
-function slug(s: string, c: string, served: boolean): string {
-  if (!served) return `${D}${s}${R}`
-  if (!c) return s
-  const [r, g, b] = hex(c)
-  return `${B}${rgb(r, g, b)}${s}${R}`
-}
-
-function link(url: string): string {
-  return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
 }
 
 // ---- command ----
 
 export const listCommand = defineCommand({
-  meta: { name: 'list', description: 'List all workspaces' },
+  meta: { name: 'list', description: 'Browse workspaces interactively' },
   args: {
-    json: { type: 'boolean', description: 'Output JSON' },
-    all: { type: 'boolean', alias: 'a', description: 'Show git branches' },
+    json: { type: 'boolean', description: 'Output JSON (non-interactive)' },
     filter: { type: 'positional', description: 'Fuzzy-filter by name', required: false },
   },
   run: async ({ args }) => {
@@ -121,41 +127,127 @@ export const listCommand = defineCommand({
       workspaces = fuse.search(args.filter as string).map(r => r.item)
     }
 
+    // JSON mode — non-interactive
     if (args.json) {
       console.log(JSON.stringify({ workspaces, count: workspaces.length }, null, 2))
       process.exit(0)
     }
+
     if (workspaces.length === 0) {
-      console.log(`\n  ${D}No workspaces found.${R}\n`)
+      console.log(`\n  No workspaces found.\n`)
       process.exit(0)
     }
 
-    const showBranch = !!args.all
-    const tty = process.stdout.isTTY
-    const grad = gradient(['#FF71CE', '#01CDFE'])
+    const config = loadConfig()
+    while (true) {
+      const grad = gradient(['#FF71CE', '#01CDFE'])
+      intro(`${grad('workspaces')}  ${workspaces.length} total`)
 
-    console.log(`\n  ${grad('workspaces')}`)
-    console.log(`  ${D}${'─'.repeat(60)}${R}`)
+      // Build options with hints
+      const options = workspaces.map(w => {
+        const time = relativeTime(w.lastCommit)
+        const ahead = w.feAhead > 0 || w.beAhead > 0 ? ` +${w.feAhead}/+${w.beAhead}` : ''
+        return {
+          value: w.slug,
+          label: `${w.served ? '●' : '○'} ${w.slug}`,
+          hint: `${time}${ahead}`,
+        }
+      })
 
-    for (const [i, w] of workspaces.entries()) {
-      const num = D + String(i).padStart(2) + R
-      const name = slug(w.slug, w.color, w.served)
-      const url = w.adminUrl
-        ? tty ? link(w.adminUrl) : D + w.adminUrl + R
-        : `${D}(not served)${R}`
+      const selected = await select({
+        message: 'Browse workspaces (↑↓ to move, enter to inspect):',
+        options,
+      })
 
-      console.log(` ${num}  ${dot(w.color)}  ${name}`)
-      if (showBranch) {
-        const trunc = (s: string) => s.length > 25 ? s.slice(0, 24) + '…' : s
-        console.log(`      ${D}fe${R} ${trunc(w.feBranch)}  ${D}be${R} ${trunc(w.beBranch)}`)
+      if (isCancel(selected)) {
+        outro('Done.')
+        process.exit(0)
       }
-      console.log(`      ${url}`)
-    }
 
-    if (tty) process.stdout.write('\x1b]8;;\x1b\\')
-    const served = workspaces.filter(w => w.served).length
-    const filtered = args.filter ? ` (filtered from ${gather().length})` : ''
-    console.log(`  ${D}${'─'.repeat(60)}${R}`)
-    console.log(`  ${D}${workspaces.length} workspace(s) — ${served} served${filtered}${R}\n`)
+      const w = workspaces.find(x => x.slug === selected)
+      if (!w) continue
+
+      // Detail panel
+      const ahead = w.feAhead > 0 || w.beAhead > 0
+        ? `fe +${w.feAhead}  be +${w.beAhead}`
+        : 'no unmerged commits'
+
+      note(
+        `status:    ${w.served ? 'served' : 'not served'}\n` +
+        `fe branch: ${w.feBranch}\n` +
+        `be branch: ${w.beBranch}\n` +
+        `ahead:     ${ahead}\n` +
+        `activity:  ${relativeTime(w.lastCommit)}\n` +
+        `url:       ${w.adminUrl}`,
+        w.slug,
+      )
+
+      // Action menu
+      const action = await select({
+        message: 'What would you like to do?',
+        options: [
+          { value: 'open', label: 'Open in IDE', hint: `zed + ${config.backendIde}` },
+          { value: 'serve', label: 'Serve / re-serve', hint: 'ws serve --force' },
+          { value: 'doctor', label: 'Run doctor', hint: 'diagnose issues' },
+          { value: 'back', label: 'Back to list' },
+          { value: 'quit', label: 'Quit' },
+        ],
+      })
+
+      if (isCancel(action) || action === 'quit') {
+        outro('Done.')
+        process.exit(0)
+      }
+
+      if (action === 'back') continue
+
+      if (action === 'open') {
+        const fePath = join(config.workspacesRoot, w.slug, config.frontendDirName)
+        const bePath = join(config.workspacesRoot, w.slug, config.backendDirName)
+        const side = await select({
+          message: 'Which side?',
+          options: [
+            { value: 'both', label: `Both (${config.frontendIde} + ${config.backendIde})` },
+            { value: 'frontend', label: `Frontend only (${config.frontendIde})` },
+            { value: 'backend', label: `Backend only (${config.backendIde})` },
+          ],
+        })
+        if (isCancel(side)) continue
+        if (side === 'both' || side === 'frontend') {
+          spawn(config.frontendIde, config.frontendIde === 'zed' ? ['-n', fePath] : [fePath], { stdio: 'ignore', detached: true }).unref()
+        }
+        if (side === 'both' || side === 'backend') {
+          spawn(config.backendIde, config.backendIde === 'zed' ? ['-n', bePath] : [bePath], { stdio: 'ignore', detached: true }).unref()
+        }
+        log.success(`Opened ${w.slug}`)
+        outro('Done.')
+        process.exit(0)
+      }
+
+      if (action === 'serve') {
+        const spin = (await import('@clack/prompts')).spinner()
+        spin.start('Running ws serve --force…')
+        execSync(`workspaces serve '${w.slug}' --force`, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env },
+        })
+        spin.stop('Done')
+        log.success(`Served: ${w.adminUrl}`)
+        outro('Done.')
+        process.exit(0)
+      }
+
+      if (action === 'doctor') {
+        const spin = (await import('@clack/prompts')).spinner()
+        spin.start('Running doctor…')
+        try {
+          execSync(`node ${process.argv[1]} doctor '${w.slug}' --fix`, {
+            stdio: 'inherit',
+            env: { ...process.env },
+          })
+        } catch { /* doctor exits non-zero on issues */ }
+        process.exit(0)
+      }
+    }
   },
 })
