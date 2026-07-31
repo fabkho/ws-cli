@@ -39,10 +39,3 @@ export function ws(subcommand: string, args: string[] = [], opts: BashOpts = {})
     status: result.status,
   }
 }
-
-/**
- * Run with stdout captured for JSON output.
- */
-export function wsCapture(subcommand: string, args: string[] = [], env?: Record<string, string>): BashResult {
-  return ws(subcommand, args, { capture: true, env })
-}
