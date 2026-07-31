@@ -27,6 +27,7 @@
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.7.0",
+    "@inquirer/search": "^4.2.1",
     "citty": "^0.2.2",
     "cli-table3": "^0.6.5",
     "fuse.js": "^7.5.0",

@@ -1,7 +1,8 @@
-// ws list — interactive workspace browser
+// ws list — interactive workspace browser with type-ahead search
 
 import { defineCommand } from 'citty'
-import { select, intro, outro, isCancel, note, log } from '@clack/prompts'
+import search, { Separator } from '@inquirer/search'
+import { select, outro, isCancel, note, log, spinner } from '@clack/prompts'
 import gradient from 'gradient-string'
 import { loadConfig } from '../config.js'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
@@ -110,57 +111,89 @@ function gather(): W[] {
     })
 }
 
+// ---- helpers ----
+
+function fuzzyFilter(term: string, items: W[]): W[] {
+  const t = term.toLowerCase()
+  return items.filter(w => {
+    if (w.slug.toLowerCase().includes(t)) return true
+    if (w.subdomain.toLowerCase().includes(t)) return true
+    if (w.feBranch.toLowerCase().includes(t)) return true
+    if (w.beBranch.toLowerCase().includes(t)) return true
+    return false
+  })
+}
+
 // ---- command ----
 
 export const listCommand = defineCommand({
-  meta: { name: 'list', description: 'Browse workspaces interactively' },
+  meta: { name: 'list', description: 'Browse workspaces interactively with type-ahead search' },
   args: {
     json: { type: 'boolean', description: 'Output JSON (non-interactive)' },
-    filter: { type: 'positional', description: 'Fuzzy-filter by name', required: false },
   },
   run: async ({ args }) => {
-    let workspaces = gather()
+    const workspaces = gather()
+    const config = loadConfig()
 
-    if (args.filter) {
-      const { default: Fuse } = await import('fuse.js')
-      const fuse = new Fuse(workspaces, { keys: ['slug', 'subdomain'], threshold: 0.4 })
-      workspaces = fuse.search(args.filter as string).map(r => r.item)
-    }
-
-    // JSON mode — non-interactive
     if (args.json) {
       console.log(JSON.stringify({ workspaces, count: workspaces.length }, null, 2))
       process.exit(0)
     }
-
     if (workspaces.length === 0) {
       console.log(`\n  No workspaces found.\n`)
       process.exit(0)
     }
 
-    const config = loadConfig()
     while (true) {
       const grad = gradient(['#FF71CE', '#01CDFE'])
-      intro(`${grad('workspaces')}  ${workspaces.length} total`)
+      console.log(`\n  ${grad('workspaces')}  ${workspaces.length} total\n`)
 
-      // Build options with hints
-      const options = workspaces.map(w => {
-        const time = relativeTime(w.lastCommit)
-        const ahead = w.feAhead > 0 || w.beAhead > 0 ? ` +${w.feAhead}/+${w.beAhead}` : ''
-        return {
-          value: w.slug,
-          label: `${w.served ? '●' : '○'} ${w.slug}`,
-          hint: `${time}${ahead}`,
-        }
+      // Type-ahead search: typing filters the list in real-time
+      const selected = await search({
+        message: 'Type to search, ↑↓ to move, enter to inspect:',
+        source: async (term, { signal: _signal }) => {
+          const items = term ? fuzzyFilter(term, workspaces) : workspaces
+          if (items.length === 0) return []
+
+          // Build rich options with descriptions
+          const options: Array<{ value: string; name: string; description: string } | Separator> = []
+
+          // Served section
+          const served = items.filter(w => w.served)
+          if (served.length > 0) {
+            options.push(new Separator(`─── Served (${served.length}) ───`))
+            for (const w of served) {
+              const ahead = w.feAhead > 0 || w.beAhead > 0
+                ? `+${w.feAhead}/+${w.beAhead}  `
+                : ''
+              options.push({
+                value: w.slug,
+                name: w.slug,
+                description: `${ahead}${relativeTime(w.lastCommit)}  ·  ${w.subdomain}`,
+              })
+            }
+          }
+
+          // Not served section
+          const unserved = items.filter(w => !w.served)
+          if (unserved.length > 0) {
+            options.push(new Separator(`─── Not served (${unserved.length}) ───`))
+            for (const w of unserved) {
+              options.push({
+                value: w.slug,
+                name: w.slug,
+                description: 'not served',
+              })
+            }
+          }
+
+          return options
+        },
+        pageSize: 15,
       })
 
-      const selected = await select({
-        message: 'Browse workspaces (↑↓ to move, enter to inspect):',
-        options,
-      })
-
-      if (isCancel(selected)) {
-        outro('Done.')
+      if (selected === undefined || (selected as string) === '') {
+        console.log('')
         process.exit(0)
       }
 
@@ -186,7 +219,7 @@ export const listCommand = defineCommand({
       const action = await select({
         message: 'What would you like to do?',
         options: [
-          { value: 'open', label: 'Open in IDE', hint: `zed + ${config.backendIde}` },
+          { value: 'open', label: 'Open in IDE', hint: `${config.frontendIde} + ${config.backendIde}` },
           { value: 'serve', label: 'Serve / re-serve', hint: 'ws serve --force' },
           { value: 'doctor', label: 'Run doctor', hint: 'diagnose issues' },
           { value: 'back', label: 'Back to list' },
@@ -225,7 +258,7 @@ export const listCommand = defineCommand({
       }
 
       if (action === 'serve') {
-        const spin = (await import('@clack/prompts')).spinner()
+        const spin = spinner()
         spin.start('Running ws serve --force…')
         execSync(`workspaces serve '${w.slug}' --force`, {
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -238,7 +271,7 @@ export const listCommand = defineCommand({
       }
 
       if (action === 'doctor') {
-        const spin = (await import('@clack/prompts')).spinner()
+        const spin = spinner()
         spin.start('Running doctor…')
         try {
           execSync(`node ${process.argv[1]} doctor '${w.slug}' --fix`, {
