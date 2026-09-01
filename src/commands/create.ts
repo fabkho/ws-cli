@@ -27,7 +27,7 @@ export const createCommand = defineCommand({
     },
     terminals: {
       type: 'boolean',
-      description: 'Open terminals after create (default: false for warp, true for terminal)',
+      description: 'Open terminals after create (overrides config TERMINAL_ENABLED)',
     },
     terminalsSide: {
       type: 'string',
