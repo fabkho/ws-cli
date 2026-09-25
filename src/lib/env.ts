@@ -19,7 +19,9 @@ export function fixEnvUrls(
   if (!existsSync(envPath)) return { fixed: false, details: ['file not found'] }
 
   const content = readFileSync(envPath, 'utf-8')
-  const domainRe = new RegExp(`https?://${baseDomain.replace(/\./g, '\\.')}`, 'g')
+  // Capture the scheme — it is a property of the source template and must
+  // survive (BASE_URL=http://… is the registered OAuth redirect URI).
+  const domainRe = new RegExp(`(https?)://${baseDomain.replace(/\./g, '\\.')}`, 'g')
   const replacements: string[] = []
   let modified = false
 
@@ -30,9 +32,9 @@ export function fixEnvUrls(
 
     const match = line.match(domainRe)
     if (match) {
-      const newLine = line.replace(domainRe, `https://${host}`)
+      const newLine = line.replace(domainRe, (_m, scheme: string) => `${scheme}://${host}`)
       if (newLine !== line) {
-        replacements.push(`  line ${i + 1}: ${match[0]} -> https://${host}`)
+        replacements.push(`  line ${i + 1}: ${match[0]} -> host ${host} (scheme kept)`)
         modified = true
         return newLine
       }

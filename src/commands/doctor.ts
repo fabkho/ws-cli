@@ -13,41 +13,54 @@ interface Check {
   detail: string
 }
 
-function checkEnvUrls(envPath: string, baseDomain: string, host: string): Check {
+// The main repo's env is the source of truth: every base-domain URL must be
+// rewritten to the workspace host with its scheme intact (app-admin's
+// BASE_URL is http:// on purpose — it is the registered OAuth redirect URI),
+// and ECHO_HOST_URL must stay on the base domain. Asserting "no http://
+// anywhere" inverted that invariant and reported healthy workspaces as broken.
+function checkEnvUrls(envPath: string, mainEnvPath: string, baseDomain: string, host: string): Check {
+  const label = envPath.split('/').slice(-2).join('/')
   if (!existsSync(envPath)) {
-    return { label: `${envPath}`, pass: false, detail: 'file not found' }
+    return { label, pass: false, detail: 'file not found' }
   }
-  const content = readFileSync(envPath, 'utf-8')
-  const httpRe = new RegExp(`http://${baseDomain.replace(/\./g, '\\.')}`, 'g')
-  const httpsRe = new RegExp(`https://${baseDomain.replace(/\./g, '\\.')}`, 'g')
-
-  // Count http:// references to base domain (should be rewritten to https)
-  const httpMatches = content.match(httpRe)?.length ?? 0
-  // Count https:// references to base domain that should point to workspace host
-  const httpsBaseMatches = content.match(httpsRe)?.length ?? 0
-  // Count correct host references
-  const hostRe = new RegExp(`https://${host.replace(/\./g, '\\.')}`, 'g')
-  const hostMatches = content.match(hostRe)?.length ?? 0
-
-  if (httpMatches > 0) {
-    return {
-      label: envPath.split('/').slice(-2).join('/'),
-      pass: false,
-      detail: `${httpMatches} http:// URL(s) not rewritten to workspace host — auth will fail`,
+  const escaped = baseDomain.replace(/\./g, '\\.')
+  const hasBaseUrl = new RegExp(`https?://${escaped}`)
+  const rewriteRe = new RegExp(`(https?)://${escaped}`, 'g')
+  const parse = (path: string) => {
+    const vars = new Map<string, string>()
+    for (const line of readFileSync(path, 'utf-8').split('\n')) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+      if (m) vars.set(m[1], m[2])
     }
+    return vars
   }
-  if (httpsBaseMatches > 0) {
-    return {
-      label: envPath.split('/').slice(-2).join('/'),
-      pass: false,
-      detail: `${httpsBaseMatches} https:// URL(s) pointing to main (${baseDomain}), not workspace host`,
-    }
+
+  const ws = parse(envPath)
+  const main = existsSync(mainEnvPath) ? parse(mainEnvPath) : new Map<string, string>()
+  const problems: string[] = []
+  let checked = 0
+
+  for (const [key, mainValue] of main) {
+    if (!hasBaseUrl.test(mainValue)) continue
+    const actual = ws.get(key)
+    if (actual === undefined) continue
+    const expected = key === 'ECHO_HOST_URL'
+      ? mainValue
+      : mainValue.replace(rewriteRe, (_m, scheme: string) => `${scheme}://${host}`)
+    checked++
+    if (actual !== expected) problems.push(`${key}: expected ${expected}, got ${actual}`)
   }
-  return {
-    label: envPath.split('/').slice(-2).join('/'),
-    pass: true,
-    detail: `${hostMatches} URL(s) correctly point to ${host}`,
+
+  // Base-domain URLs the template diff can't cover (key missing from main env).
+  for (const [key, value] of ws) {
+    if (key === 'ECHO_HOST_URL' || main.has(key)) continue
+    if (hasBaseUrl.test(value)) problems.push(`${key}: still points at ${baseDomain}, not ${host}`)
   }
+
+  if (problems.length > 0) {
+    return { label, pass: false, detail: problems.join('; ') }
+  }
+  return { label, pass: true, detail: `${checked} URL(s) match the main env, host ${host}` }
 }
 
 export const doctorCommand = defineCommand({
@@ -113,7 +126,10 @@ export const doctorCommand = defineCommand({
     })
 
     // 3. Env file URL checks
-    const sub = slug.replace(/^.*?_/, '').toLowerCase().replace(/[^a-z0-9-]/g, '-')
+    // Mirrors bash resolve_subdomain: the part BEFORE the first underscore
+    // (the task id for task workspaces), lowercased, non-DNS collapsed to '-'.
+    const sub = slug.split('_')[0].toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
     const host = `${sub}.${config.baseDomain}`
 
     for (const app of config.defaultApps) {
@@ -121,7 +137,7 @@ export const doctorCommand = defineCommand({
       if (!appEntry) continue
       const envPath = join(wtFrontend, appEntry.dir, '.env')
       if (existsSync(envPath)) {
-        checks.push(checkEnvUrls(envPath, config.baseDomain, host))
+        checks.push(checkEnvUrls(envPath, join(config.frontendRepo, appEntry.dir, '.env'), config.baseDomain, host))
       } else {
         checks.push({
           label: `${appEntry.dir}/.env`,
@@ -134,7 +150,7 @@ export const doctorCommand = defineCommand({
     // Backend env
     const backendEnv = join(wtBackend, '.env')
     if (existsSync(backendEnv)) {
-      checks.push(checkEnvUrls(backendEnv, config.baseDomain, host))
+      checks.push(checkEnvUrls(backendEnv, join(config.backendRepo, '.env'), config.baseDomain, host))
     }
 
     // 4. Cognitor key
