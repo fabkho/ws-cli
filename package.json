@@ -1,6 +1,6 @@
 {
   "name": "@fabkho/ws-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TypeScript CLI wrapper for workspace-management — AI-friendly workspace orchestration",
   "type": "module",
   "main": "./dist/index.js",
